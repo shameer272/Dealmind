@@ -1,0 +1,73 @@
+version: '3.8'
+
+services:
+  # Relational Application Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: dealmind-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgrespassword
+      POSTGRES_DB: dealmind
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Official Hindsight Memory Engine
+  hindsight:
+    image: vectorizeio/hindsight:latest
+    container_name: dealmind-hindsight
+    restart: unless-stopped
+    ports:
+      - "8888:8888"
+    environment:
+      - PORT=8888
+      - LOG_LEVEL=info
+    volumes:
+      - hindsight_data:/data
+
+  # DealMind FastAPI Backend
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: dealmind-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - APP_ENV=production
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgrespassword@postgres:5432/dealmind
+      - HINDSIGHT_API_URL=http://hindsight:8888
+      - HINDSIGHT_API_KEY=
+      - GROQ_API_KEY=
+      - GROQ_MODEL=openai/gpt-oss-120b
+      - FRONTEND_URL=http://localhost:5173
+    depends_on:
+      postgres:
+        condition: service_healthy
+      hindsight:
+        condition: service_started
+
+  # DealMind React Frontend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: dealmind-frontend
+    restart: unless-stopped
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
+  hindsight_data:
