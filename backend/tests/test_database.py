@@ -151,3 +151,93 @@ async def test_create_and_update_deal_timezone_aware_expected_close_date():
             assert db_deal_updated.expected_close_date.tzinfo is None
             assert db_deal_updated.expected_close_date.hour == 8
             assert db_deal_updated.expected_close_date.day == 15
+
+
+@pytest.mark.asyncio
+async def test_create_interaction_timezone_aware_occurred_at():
+    import uuid
+    from httpx import AsyncClient, ASGITransport
+    from sqlalchemy import select
+    from app.main import app
+    from app.db.database import AsyncSessionLocal, init_db
+    from app.models.models import Deal, Interaction
+
+    await init_db()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # Register and login user
+        unique_email = f"tz_interact_{uuid.uuid4().hex[:8]}@example.com"
+        reg_res = await client.post("/api/auth/register", json={
+            "name": "TZ Interaction Tester",
+            "email": unique_email,
+            "password": "Password123!",
+            "confirm_password": "Password123!",
+            "company_name": f"TZ Interaction Corp {uuid.uuid4().hex[:6]}",
+            "role": "sales_rep"
+        })
+        assert reg_res.status_code == 201
+
+        login_res = await client.post("/api/auth/login", json={
+            "email": unique_email,
+            "password": "Password123!"
+        })
+        assert login_res.status_code == 200
+        token = login_res.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # Create deal
+        deal_res = await client.post("/api/deals", json={
+            "name": "Interaction Test Deal",
+            "value": 35000.0,
+            "stage": "Discovery"
+        }, headers=headers)
+        assert deal_res.status_code == 200
+        deal_id = deal_res.json()["id"]
+
+        # Create interaction with timezone-aware occurred_at (2026-09-30T14:30:00+05:30)
+        aware_occurred_at = "2026-09-30T14:30:00+05:30"
+        interaction_res = await client.post(f"/api/deals/{deal_id}/interactions", json={
+            "deal_id": deal_id,
+            "type": "Meeting",
+            "title": "Commercial Scope & Budget Alignment",
+            "content": "Discussed commercial scope and architecture alignment.",
+            "participants": "Sarah Jenkins (VP Eng), Rep",
+            "outcome": "Confirmed scope",
+            "next_steps": "Submit proposal",
+            "occurred_at": aware_occurred_at
+        }, headers=headers)
+        assert interaction_res.status_code == 200
+        interaction_id = interaction_res.json()["interaction"]["id"]
+
+        # Verify occurred_at is stored in DB as timezone-naive UTC (14:30 +05:30 -> 09:00 UTC)
+        async with AsyncSessionLocal() as session:
+            db_interaction = (await session.execute(
+                select(Interaction).where(Interaction.id == interaction_id)
+            )).scalars().first()
+            assert db_interaction is not None
+            assert db_interaction.occurred_at is not None
+            assert db_interaction.occurred_at.tzinfo is None
+            assert db_interaction.occurred_at.year == 2026
+            assert db_interaction.occurred_at.month == 9
+            assert db_interaction.occurred_at.day == 30
+            assert db_interaction.occurred_at.hour == 9
+            assert db_interaction.occurred_at.minute == 0
+
+        # Create interaction with None occurred_at (default)
+        interaction_none_res = await client.post(f"/api/deals/{deal_id}/interactions", json={
+            "deal_id": deal_id,
+            "type": "Call",
+            "title": "Quick check-in call",
+            "content": "Follow-up phone conversation with the decision maker."
+        }, headers=headers)
+        assert interaction_none_res.status_code == 200
+        none_id = interaction_none_res.json()["interaction"]["id"]
+
+        # Verify fallback occurred_at is also timezone-naive UTC
+        async with AsyncSessionLocal() as session:
+            db_none = (await session.execute(
+                select(Interaction).where(Interaction.id == none_id)
+            )).scalars().first()
+            assert db_none is not None
+            assert db_none.occurred_at is not None
+            assert db_none.occurred_at.tzinfo is None

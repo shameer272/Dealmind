@@ -432,6 +432,12 @@ async def create_deal_interaction(
     verify_organization_deal(deal, current_user)
 
     # 1. Save interaction to database
+    occurred_at = payload.occurred_at
+    if occurred_at is None:
+        occurred_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    elif occurred_at.tzinfo is not None:
+        occurred_at = occurred_at.astimezone(timezone.utc).replace(tzinfo=None)
+
     interaction = Interaction(
         deal_id=deal_id,
         type=payload.type,
@@ -440,7 +446,7 @@ async def create_deal_interaction(
         participants=payload.participants,
         outcome=payload.outcome,
         next_steps=payload.next_steps,
-        occurred_at=payload.occurred_at or datetime.now(timezone.utc),
+        occurred_at=occurred_at,
         created_by=current_user.id
     )
     db.add(interaction)
