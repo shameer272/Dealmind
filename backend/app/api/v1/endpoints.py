@@ -349,6 +349,10 @@ async def create_deal(
             db.add(contact)
             await db.flush()
 
+    expected_close_date = payload.expected_close_date
+    if expected_close_date is not None and expected_close_date.tzinfo is not None:
+        expected_close_date = expected_close_date.astimezone(timezone.utc).replace(tzinfo=None)
+
     deal = Deal(
         organization_id=current_user.organization_id,
         company_id=company.id,
@@ -357,7 +361,7 @@ async def create_deal(
         value=payload.value if payload.value is not None else 0.0,
         currency=payload.currency or "INR",
         probability=payload.probability if payload.probability is not None else 50,
-        expected_close_date=payload.expected_close_date,
+        expected_close_date=expected_close_date,
         owner_id=current_user.id
     )
     db.add(deal)
@@ -384,6 +388,8 @@ async def update_deal(
     verify_organization_deal(deal, current_user)
 
     for field, val in payload.model_dump(exclude_unset=True).items():
+        if field == "expected_close_date" and isinstance(val, datetime) and val.tzinfo is not None:
+            val = val.astimezone(timezone.utc).replace(tzinfo=None)
         setattr(deal, field, val)
 
     await db.commit()

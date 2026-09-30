@@ -81,3 +81,73 @@ async def test_asyncpg_connection_parameters():
         assert call_kwargs.get("database") == "neondb"
 
     await test_engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_create_and_update_deal_timezone_aware_expected_close_date():
+    import uuid
+    from httpx import AsyncClient, ASGITransport
+    from sqlalchemy import select
+    from app.main import app
+    from app.db.database import AsyncSessionLocal, init_db
+    from app.models.models import Deal
+
+    await init_db()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # Register user & company
+        unique_email = f"tz_test_{uuid.uuid4().hex[:8]}@example.com"
+        reg_res = await client.post("/api/auth/register", json={
+            "name": "TZ Tester",
+            "email": unique_email,
+            "password": "Password123!",
+            "confirm_password": "Password123!",
+            "company_name": f"TZ Corp {uuid.uuid4().hex[:6]}",
+            "role": "sales_rep"
+        })
+        assert reg_res.status_code == 201
+
+        login_res = await client.post("/api/auth/login", json={
+            "email": unique_email,
+            "password": "Password123!"
+        })
+        assert login_res.status_code == 200
+        token = login_res.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # Create deal with timezone-aware expected_close_date (UTC +05:30)
+        aware_dt_str = "2026-10-30T15:30:00+05:30"
+        deal_res = await client.post("/api/deals", json={
+            "name": "Timezone Aware Deal",
+            "value": 50000.0,
+            "stage": "Discovery",
+            "expected_close_date": aware_dt_str
+        }, headers=headers)
+
+        assert deal_res.status_code == 200
+        deal_data = deal_res.json()
+        deal_id = deal_data["id"]
+
+        # Verify in database that expected_close_date is stored as offset-naive
+        async with AsyncSessionLocal() as session:
+            db_deal = (await session.execute(select(Deal).where(Deal.id == deal_id))).scalars().first()
+            assert db_deal is not None
+            assert db_deal.expected_close_date is not None
+            assert db_deal.expected_close_date.tzinfo is None
+            # 15:30 in +05:30 is 10:00 UTC
+            assert db_deal.expected_close_date.hour == 10
+            assert db_deal.expected_close_date.minute == 0
+
+        # Update deal with another timezone-aware date (UTC +00:00)
+        update_aware_dt_str = "2026-11-15T08:00:00Z"
+        update_res = await client.put(f"/api/deals/{deal_id}", json={
+            "expected_close_date": update_aware_dt_str
+        }, headers=headers)
+        assert update_res.status_code == 200
+
+        # Verify updated date in database is offset-naive
+        async with AsyncSessionLocal() as session:
+            db_deal_updated = (await session.execute(select(Deal).where(Deal.id == deal_id))).scalars().first()
+            assert db_deal_updated.expected_close_date.tzinfo is None
+            assert db_deal_updated.expected_close_date.hour == 8
+            assert db_deal_updated.expected_close_date.day == 15
